@@ -430,6 +430,14 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
         }
       }
     }
+    categorical_2_bin_.clear();
+    bin_2_categorical_.clear();
+    // Every categorical mapper needs the dummy bin for missing values, even
+    // when there are no valid categories in the sampled data.
+    bin_2_categorical_.push_back(-1);
+    categorical_2_bin_[-1] = 0;
+    cnt_in_bin.push_back(0);
+    num_bin_ = 1;
     int rest_cnt = static_cast<int>(total_sample_cnt - na_cnt);
     if (rest_cnt > 0) {
       const int SPARSE_RATIO = 100;
@@ -443,21 +451,12 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
       int cut_cnt = static_cast<int>(
           Common::RoundInt((total_sample_cnt - na_cnt) * 0.99f));
       size_t cur_cat_idx = 0;  // index of current category.
-      categorical_2_bin_.clear();
-      bin_2_categorical_.clear();
       int used_cnt = 0;
       int distinct_cnt = static_cast<int>(distinct_values_int.size());
       if (na_cnt > 0) {
         ++distinct_cnt;
       }
       max_bin = std::min(distinct_cnt, max_bin);
-      cnt_in_bin.clear();
-
-      // Push the dummy bin for NaN
-      bin_2_categorical_.push_back(-1);
-      categorical_2_bin_[-1] = 0;
-      cnt_in_bin.push_back(0);
-      num_bin_ = 1;
       while (cur_cat_idx < distinct_values_int.size()
               && (used_cnt < cut_cnt || num_bin_ < max_bin)) {
         if (counts_int[cur_cat_idx] < min_data_in_bin && cur_cat_idx > 1) {
@@ -478,6 +477,9 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
       }
       // fix count of NaN bin
       cnt_in_bin[0] = static_cast<int>(total_sample_cnt - used_cnt);
+    } else {
+      missing_type_ = MissingType::NaN;
+      cnt_in_bin[0] = static_cast<int>(total_sample_cnt);
     }
   }
 
@@ -506,6 +508,7 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
     sparse_rate_ =
         static_cast<double>(cnt_in_bin[most_freq_bin_]) / total_sample_cnt;
   } else {
+    most_freq_bin_ = 0;
     sparse_rate_ = 1.0f;
   }
 }
