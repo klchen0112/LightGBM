@@ -1,0 +1,115 @@
+/*!
+ * Copyright (c) 2026 Microsoft Corporation. All rights reserved.
+ * Copyright (c) 2026 The LightGBM developers. All rights reserved.
+ * Licensed under the MIT License. See LICENSE file in the project root for license information.
+ */
+
+#include <gtest/gtest.h>
+#include <LightGBM/bin.h>
+
+#include <limits>
+#include <string>
+#include <vector>
+
+namespace {
+
+using LightGBM::BinMapper;
+using LightGBM::BinType;
+using LightGBM::MissingType;
+
+const double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+void FindBins(BinMapper* mapper, std::vector<double> values, BinType type, size_t num_zeros = 0) {
+  mapper->FindBin(values.data(), static_cast<int>(values.size()), values.size() + num_zeros,
+                  255, 1, 1, true, type, true, false, {});
+}
+
+struct MissingCategories {
+  std::string name;
+  std::vector<double> values;
+};
+
+class MissingCategoricalBinMapperTest : public ::testing::TestWithParam<MissingCategories> {};
+
+TEST_P(MissingCategoricalBinMapperTest, InitializesMissingBinAndSerializes) {
+  BinMapper mapper;
+  FindBins(&mapper, GetParam().values, BinType::CategoricalBin);
+
+  // Check the backing category array before indexing it or serializing it.
+  ASSERT_EQ("-1", mapper.bin_info_string());
+  ASSERT_EQ(1, mapper.num_bin());
+  EXPECT_EQ(MissingType::NaN, mapper.missing_type());
+  EXPECT_TRUE(mapper.is_trivial());
+  EXPECT_EQ(0u, mapper.GetDefaultBin());
+  EXPECT_EQ(0u, mapper.GetMostFreqBin());
+  EXPECT_DOUBLE_EQ(1.0, mapper.sparse_rate());
+  EXPECT_DOUBLE_EQ(-1.0, mapper.BinToValue(0));
+  for (double value : {kNaN, -2.0, -1.0, 0.0, 1.0}) {
+    EXPECT_EQ(0u, mapper.ValueToBin(value));
+  }
+  std::vector<char> buffer(mapper.SizesInByte());
+  mapper.CopyTo(buffer.data());
+  BinMapper restored(buffer.data());
+  ASSERT_EQ(1, restored.num_bin());
+  EXPECT_EQ("-1", restored.bin_info_string());
+  EXPECT_EQ(MissingType::NaN, restored.missing_type());
+  EXPECT_EQ(0u, restored.ValueToBin(kNaN));
+}
+
+TEST(BinMapper, ReplacesExistingCategories) {
+  BinMapper mapper;
+  // Fail safely on versions that cannot construct an all-missing category mapper.
+  FindBins(&mapper, {kNaN, kNaN}, BinType::CategoricalBin);
+  ASSERT_EQ("-1", mapper.bin_info_string());
+
+  FindBins(&mapper, {1.0, 1.0, 1.0, 1.0, 2.0}, BinType::CategoricalBin);
+  ASSERT_FALSE(mapper.is_trivial());
+  ASSERT_NE(0u, mapper.GetMostFreqBin());
+
+  FindBins(&mapper, {kNaN, kNaN}, BinType::CategoricalBin);
+
+  ASSERT_EQ("-1", mapper.bin_info_string());
+  EXPECT_EQ(1, mapper.num_bin());
+  EXPECT_TRUE(mapper.is_trivial());
+  EXPECT_EQ(0u, mapper.ValueToBin(1.0));
+  EXPECT_EQ(0u, mapper.ValueToBin(2.0));
+  EXPECT_EQ(0u, mapper.GetMostFreqBin());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    MissingValues, MissingCategoricalBinMapperTest,
+    ::testing::Values(
+        MissingCategories{"AllNaN", {kNaN, kNaN, kNaN, kNaN}},
+        MissingCategories{"AllNegative", {-1.0, -2.0, -3.0, -1.0}},
+        MissingCategories{"NaNAndNegative", {kNaN, -1.0, kNaN, -2.0}}),
+    [](const ::testing::TestParamInfo<MissingCategories>& info) { return info.param.name; });
+
+TEST(BinMapper, PreservesValidCategoriesIncludingZero) {
+  BinMapper mapper;
+  // Zero samples are supplied through total_sample_cnt, as in dataset construction.
+  FindBins(&mapper, {1.0, 1.0, 1.0, 2.0}, BinType::CategoricalBin, 2);
+
+  ASSERT_EQ(4, mapper.num_bin());
+  EXPECT_EQ(MissingType::None, mapper.missing_type());
+  EXPECT_FALSE(mapper.is_trivial());
+  EXPECT_EQ(mapper.ValueToBin(0.0), mapper.GetDefaultBin());
+  for (double value : {0.0, 1.0, 2.0}) {
+    EXPECT_NE(0u, mapper.ValueToBin(value));
+    EXPECT_DOUBLE_EQ(value, mapper.BinToValue(mapper.ValueToBin(value)));
+  }
+  EXPECT_EQ(0u, mapper.ValueToBin(kNaN));
+  EXPECT_EQ(0u, mapper.ValueToBin(-1.0));
+  EXPECT_EQ(0u, mapper.ValueToBin(3.0));
+}
+
+TEST(BinMapper, TrivialNumericBinsResetMostFrequentBin) {
+  BinMapper mapper;
+  FindBins(&mapper, {1.0, 1.0, 1.0, 1.0}, BinType::NumericalBin, 1);
+  ASSERT_EQ(1u, mapper.GetMostFreqBin());
+
+  FindBins(&mapper, {3.0, 3.0, 3.0}, BinType::NumericalBin);
+  EXPECT_TRUE(mapper.is_trivial());
+  EXPECT_EQ(0u, mapper.GetMostFreqBin());
+}
+
+}  // namespace
